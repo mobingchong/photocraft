@@ -1,7 +1,7 @@
 # iOS build feasibility probe for storytold/photocraft
 #
-# The upstream source is cloned by the runner itself (fast, unrestricted
-# network), so this repository only carries the workflow.
+# The runner clones the upstream source itself (fast, unrestricted network), so
+# this repository only carries the workflow.
 #
 # Goal: find out empirically how far this codebase is from producing an iOS
 # artifact. Nothing here is signed - codesigning needs an Apple Developer
@@ -45,11 +45,11 @@ jobs:
             echo "- rustc       : $(rustc --version)"
             echo "- cargo       : $(cargo --version)"
             echo
-            echo "## iOS support present in the source tree"
-            echo '- .rs files mentioning target_os="ios" : '"$(grep -rl 'target_os = "ios"' --include='*.rs' . | wc -l | tr -d ' ')"
-            echo "- Info.plist files                      : $(find . -name 'Info.plist' | wc -l | tr -d ' ')"
-            echo "- directories under packaging/          : $(ls packaging | tr '\n' ' ')"
-            echo "- CI files mentioning apple-ios         : $(grep -rl 'apple-ios' .github/ 2>/dev/null | wc -l | tr -d ' ')"
+            echo "## iOS support already present in the source tree"
+            echo '- .rs files mentioning target_os="ios" :'" $(grep -rl 'target_os = \"ios\"' --include='*.rs' . | wc -l | tr -d ' ')"
+            echo "- Info.plist files                     : $(find . -name 'Info.plist' | wc -l | tr -d ' ')"
+            echo "- directories under packaging/         : $(ls packaging | tr '\n' ' ')"
+            echo "- CI files mentioning apple-ios        : $(grep -rl 'apple-ios' .github/ 2>/dev/null | wc -l | tr -d ' ')"
           } > probe-out.md
 
       - name: Add iOS targets
@@ -125,20 +125,20 @@ jobs:
             file "$BIN" >> probe-out.md
             mkdir -p Payload/PhotoCraft.app
             cp "$BIN" Payload/PhotoCraft.app/PhotoCraft
-            cat > Payload/PhotoCraft.app/Info.plist <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>CFBundleName</key><string>PhotoCraft</string>
-  <key>CFBundleExecutable</key><string>PhotoCraft</string>
-  <key>CFBundleIdentifier</key><string>app.photocraft.ios</string>
-  <key>CFBundleVersion</key><string>0.5.0</string>
-  <key>CFBundleShortVersionString</key><string>0.5.0</string>
-  <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
-  <key>MinimumOSVersion</key><string>16.0</string>
-  <key>LSRequiresIPhoneOS</key><true/>
-</dict></plist>
-PLIST
+            {
+              echo '<?xml version="1.0" encoding="UTF-8"?>'
+              echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+              echo '<plist version="1.0"><dict>'
+              echo '  <key>CFBundleName</key><string>PhotoCraft</string>'
+              echo '  <key>CFBundleExecutable</key><string>PhotoCraft</string>'
+              echo '  <key>CFBundleIdentifier</key><string>app.photocraft.ios</string>'
+              echo '  <key>CFBundleVersion</key><string>0.5.0</string>'
+              echo '  <key>CFBundleShortVersionString</key><string>0.5.0</string>'
+              echo '  <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>'
+              echo '  <key>MinimumOSVersion</key><string>16.0</string>'
+              echo '  <key>LSRequiresIPhoneOS</key><true/>'
+              echo '</dict></plist>'
+            } > Payload/PhotoCraft.app/Info.plist
             zip -qr PhotoCraft-unsigned.ipa Payload
             ls -lh PhotoCraft-unsigned.ipa >> probe-out.md
             echo "RESULT: ipa assembled (UNSIGNED - will NOT install on a stock iPhone)" >> probe-out.md
