@@ -211,6 +211,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           ls -lh out
+          # Only publish something worth downloading; a failed build leaves the
+          # report but no .ipa, and an empty release would just be confusing.
+          if ! ls out/*.ipa >/dev/null 2>&1; then
+            echo "No .ipa in the artifact - the build did not get that far. Nothing published."
+            ls -l out
+            exit 0
+          fi
           TAG="ios-${GITHUB_RUN_NUMBER}"
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
