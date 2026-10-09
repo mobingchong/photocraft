@@ -27,6 +27,12 @@ jobs:
         working-directory: src
 
     steps:
+      # This repository carries patch-ios.py; the upstream source is cloned below.
+      - name: Checkout this repo (patch-ios.py)
+        uses: actions/checkout@v4
+        with:
+          path: probe
+
       - name: Clone upstream source
         working-directory: .
         run: |
@@ -146,6 +152,25 @@ jobs:
           fi
           grep -E '^error' c3.log | sort -u | head -n 25 >> probe-out.md
           tail -n 25 c3.log >> probe-out.md
+          echo '```' >> probe-out.md
+
+      - name: Probe C4 - gate the desktop-only services out (rfd/arboard/open/tablet)
+        continue-on-error: true
+        run: |
+          git checkout -- apps/photocraft/Cargo.toml apps/photocraft/src/services.rs
+          python3 ../probe/patch-ios.py
+          {
+            echo
+            echo "## Probe C4: rfd / arboard / open / photocraft-tablet gated off on iOS"
+            echo "(patch-ios.py: no native file dialog, no clipboard, no URL opener, no tablet)"
+            echo '```'
+          } >> probe-out.md
+          if cargo build --target aarch64-apple-ios -p photocraft > c4.log 2>&1
+          then echo "RESULT: PASS" >> probe-out.md
+          else echo "RESULT: FAIL" >> probe-out.md
+          fi
+          grep -E '^error' c4.log | sort -u | head -n 30 >> probe-out.md
+          tail -n 25 c4.log >> probe-out.md
           echo '```' >> probe-out.md
 
       - name: Probe D - try to assemble an unsigned .app / .ipa
