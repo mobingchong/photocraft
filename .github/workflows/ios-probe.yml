@@ -1,0 +1,162 @@
+# iOS build feasibility probe for storytold/photocraft
+#
+# The upstream source is cloned by the runner itself (fast, unrestricted
+# network), so this repository only carries the workflow.
+#
+# Goal: find out empirically how far this codebase is from producing an iOS
+# artifact. Nothing here is signed - codesigning needs an Apple Developer
+# identity, which this workflow deliberately does not have.
+#
+# Every probe is continue-on-error so one failure does not stop the rest, and
+# the report is written either way.
+
+name: ios-probe
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    defaults:
+      run:
+        working-directory: src
+
+    steps:
+      - name: Clone upstream source
+        working-directory: .
+        run: |
+          git clone --depth 1 https://github.com/storytold/photocraft.git src
+          cd src && git log --oneline -1
+
+      - name: Environment
+        run: |
+          {
+            echo "# iOS build probe - storytold/photocraft"
+            echo
+            echo "## Environment"
+            echo "- runner arch : $(uname -m)"
+            echo "- macOS       : $(sw_vers -productVersion)"
+            echo "- Xcode       : $(xcodebuild -version 2>/dev/null | tr '\n' ' ')"
+            echo "- rustc       : $(rustc --version)"
+            echo "- cargo       : $(cargo --version)"
+            echo
+            echo "## iOS support present in the source tree"
+            echo '- .rs files mentioning target_os="ios" : '"$(grep -rl 'target_os = "ios"' --include='*.rs' . | wc -l | tr -d ' ')"
+            echo "- Info.plist files                      : $(find . -name 'Info.plist' | wc -l | tr -d ' ')"
+            echo "- directories under packaging/          : $(ls packaging | tr '\n' ' ')"
+            echo "- CI files mentioning apple-ios         : $(grep -rl 'apple-ios' .github/ 2>/dev/null | wc -l | tr -d ' ')"
+          } > probe-out.md
+
+      - name: Add iOS targets
+        run: |
+          rustup target add aarch64-apple-ios
+          rustup target add aarch64-apple-ios-sim
+          rustup target list --installed
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src
+
+      - name: Probe A - pure core crates -> aarch64-apple-ios
+        continue-on-error: true
+        run: |
+          {
+            echo
+            echo "## Probe A: core crates -> aarch64-apple-ios"
+            echo '```'
+          } >> probe-out.md
+          if cargo build --target aarch64-apple-ios \
+              -p photocraft-doc -p photocraft-raster -p photocraft-color \
+              -p photocraft-geom -p photocraft-compose -p photocraft-codecs \
+              -p photocraft-io -p photocraft-format -p photocraft-algo \
+              -p photocraft-engine > a.log 2>&1
+          then echo "RESULT: PASS" >> probe-out.md
+          else echo "RESULT: FAIL" >> probe-out.md
+          fi
+          tail -n 30 a.log >> probe-out.md
+          echo '```' >> probe-out.md
+
+      - name: Probe B - ui-egui -> aarch64-apple-ios
+        continue-on-error: true
+        run: |
+          {
+            echo
+            echo "## Probe B: photocraft-ui-egui -> aarch64-apple-ios"
+            echo '```'
+          } >> probe-out.md
+          if cargo build --target aarch64-apple-ios -p photocraft-ui-egui > b.log 2>&1
+          then echo "RESULT: PASS" >> probe-out.md
+          else echo "RESULT: FAIL" >> probe-out.md
+          fi
+          tail -n 30 b.log >> probe-out.md
+          echo '```' >> probe-out.md
+
+      - name: Probe C - the actual app -> aarch64-apple-ios
+        continue-on-error: true
+        run: |
+          {
+            echo
+            echo "## Probe C: photocraft (the desktop app) -> aarch64-apple-ios"
+            echo '```'
+          } >> probe-out.md
+          if cargo build --target aarch64-apple-ios -p photocraft > c.log 2>&1
+          then echo "RESULT: PASS" >> probe-out.md
+          else echo "RESULT: FAIL" >> probe-out.md
+          fi
+          tail -n 40 c.log >> probe-out.md
+          echo '```' >> probe-out.md
+
+      - name: Probe D - try to assemble an unsigned .app / .ipa
+        continue-on-error: true
+        run: |
+          BIN=target/aarch64-apple-ios/debug/photocraft
+          {
+            echo
+            echo "## Probe D: bundle an unsigned .ipa"
+            echo '```'
+          } >> probe-out.md
+          if [ -f "$BIN" ]; then
+            file "$BIN" >> probe-out.md
+            mkdir -p Payload/PhotoCraft.app
+            cp "$BIN" Payload/PhotoCraft.app/PhotoCraft
+            cat > Payload/PhotoCraft.app/Info.plist <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleName</key><string>PhotoCraft</string>
+  <key>CFBundleExecutable</key><string>PhotoCraft</string>
+  <key>CFBundleIdentifier</key><string>app.photocraft.ios</string>
+  <key>CFBundleVersion</key><string>0.5.0</string>
+  <key>CFBundleShortVersionString</key><string>0.5.0</string>
+  <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
+  <key>MinimumOSVersion</key><string>16.0</string>
+  <key>LSRequiresIPhoneOS</key><true/>
+</dict></plist>
+PLIST
+            zip -qr PhotoCraft-unsigned.ipa Payload
+            ls -lh PhotoCraft-unsigned.ipa >> probe-out.md
+            echo "RESULT: ipa assembled (UNSIGNED - will NOT install on a stock iPhone)" >> probe-out.md
+          else
+            echo "RESULT: no binary at $BIN - nothing to bundle" >> probe-out.md
+            find target/aarch64-apple-ios -maxdepth 2 2>/dev/null | head -n 30 >> probe-out.md
+          fi
+          echo '```' >> probe-out.md
+
+      - name: Show report
+        run: cat probe-out.md
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-probe-report
+          path: |
+            src/probe-out.md
+            src/PhotoCraft-unsigned.ipa
+          if-no-files-found: ignore
