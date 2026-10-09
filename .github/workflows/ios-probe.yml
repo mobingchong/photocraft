@@ -112,6 +112,24 @@ jobs:
           tail -n 40 c.log >> probe-out.md
           echo '```' >> probe-out.md
 
+      - name: Probe C2 - same as C but with eframe wayland/x11 features stripped
+        continue-on-error: true
+        run: |
+          sed -i '' 's/"wayland", "x11", //' apps/photocraft/Cargo.toml
+          {
+            echo
+            echo "## Probe C2: same as C, but eframe wayland/x11 features stripped"
+            echo "(wayland-backend uses Linux-only socket APIs and cannot build for iOS)"
+            echo '```'
+          } >> probe-out.md
+          if cargo build --target aarch64-apple-ios -p photocraft > c2.log 2>&1
+          then echo "RESULT: PASS" >> probe-out.md
+          else echo "RESULT: FAIL" >> probe-out.md
+          fi
+          grep -E '^error' c2.log | head -n 25 >> probe-out.md
+          tail -n 25 c2.log >> probe-out.md
+          echo '```' >> probe-out.md
+
       - name: Probe D - try to assemble an unsigned .app / .ipa
         continue-on-error: true
         run: |
