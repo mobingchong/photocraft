@@ -138,39 +138,20 @@ jobs:
           cat probe-out.md
 
       # ------------------------------------------------------------- bundle
-      - name: Assemble the unsigned .ipa
+      # ------------------------------------------------------------- bundle
+      # The first build shipped only the executable and a bare Info.plist, so iOS
+      # had no icon to show and drew the blank default tile. Icons need three
+      # things: the PNGs in the bundle root, a CFBundleIcons block naming them,
+      # and no alpha channel / no pre-rounded corners (iOS applies its own mask).
+      # _mkicons.py made the renders, _mkplist.py writes the plist, and
+      # _bundleipa.py assembles the .ipa and cross-checks that every name the
+      # plist declares actually exists in the bundle.
+      - name: Assemble the unsigned .ipa (with the app icon)
+        env:
+          ICON_DIR: ${{ github.workspace }}/probe/icons
         run: |
           BIN=target/aarch64-apple-ios/release/photocraft
-          rm -rf Payload PhotoCraft-unsigned.ipa
-          mkdir -p Payload/PhotoCraft.app
-          cp "$BIN" Payload/PhotoCraft.app/PhotoCraft
-          {
-            echo '<?xml version="1.0" encoding="UTF-8"?>'
-            echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
-            echo '<plist version="1.0"><dict>'
-            echo '  <key>CFBundleName</key><string>PhotoCraft</string>'
-            echo '  <key>CFBundleDisplayName</key><string>PhotoCraft</string>'
-            echo '  <key>CFBundleExecutable</key><string>PhotoCraft</string>'
-            echo '  <key>CFBundleIdentifier</key><string>app.photocraft.ios</string>'
-            echo '  <key>CFBundleVersion</key><string>0.5.0</string>'
-            echo '  <key>CFBundleShortVersionString</key><string>0.5.0</string>'
-            echo '  <key>CFBundlePackageType</key><string>APPL</string>'
-            echo '  <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>'
-            echo '  <key>MinimumOSVersion</key><string>16.0</string>'
-            echo '  <key>LSRequiresIPhoneOS</key><true/>'
-            echo '  <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>'
-            echo '  <key>UIRequiredDeviceCapabilities</key><array><string>arm64</string></array>'
-            echo '  <key>UILaunchScreen</key><dict/>'
-            echo '  <key>UISupportedInterfaceOrientations</key>'
-            echo '  <array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>'
-            echo '  <key>UISupportedInterfaceOrientations~ipad</key>'
-            echo '  <array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationPortraitUpsideDown</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>'
-            echo '</dict></plist>'
-          } > Payload/PhotoCraft.app/Info.plist
-          zip -qr PhotoCraft-unsigned.ipa Payload
-          echo "--- ipa ---"
-          ls -l PhotoCraft-unsigned.ipa
-          unzip -l PhotoCraft-unsigned.ipa
+          python3 ../probe/_bundleipa.py "$BIN" "$ICON_DIR" PhotoCraft-unsigned.ipa 0.5.0 2>&1 | tee bundle.log
           {
             echo
             echo "## .ipa"
@@ -191,6 +172,7 @@ jobs:
             src/probe-out.md
             src/PhotoCraft-unsigned.ipa
             src/build.log
+            src/bundle.log
           if-no-files-found: ignore
 
   # Artifact downloads require a signed-in session; release assets do not, so the
