@@ -1,0 +1,16 @@
+# Fonts embedded into PhotoCraft at build time (CRAFT_FONTS_DIR).
+#
+# Read by crates/text/build.rs, which looks for this file at
+# $CRAFT_FONTS_DIR/fonts/manifest.txt and emits, per line,
+#
+#     CraftFont { family, style, scripts, bytes: include_bytes!(<DIR>/<file>) }
+#
+# Columns: family | style | file | scripts
+#
+# NOTE: <file> is joined to CRAFT_FONTS_DIR itself, not to the fonts/ directory,
+#       so the paths below start with "fonts/".
+#
+# scripts are ISO 15924 codes: Jpan = Japanese, Hans = Simplified Chinese,
+# Hant = Traditional Chinese, Kore = Korean. The UI loader (cjk_fonts.rs) selects
+# by script: Jpan gets japanese_for_ui(), Hans and Hant both get chinese_for_ui().
+Noto Sans SC | Regular | fonts/NotoSansSC-UI-Subset.ttf | Hans,Hant
