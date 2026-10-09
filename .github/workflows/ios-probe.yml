@@ -1,34 +1,40 @@
-# iOS build feasibility probe for storytold/photocraft
+# iOS build for storytold/photocraft — unsigned .ipa with an embedded Chinese UI font.
 #
 # The runner clones the upstream source itself (fast, unrestricted network), so
-# this repository only carries the workflow.
+# this repository only carries the build inputs: the patch script, the craft-fonts
+# tree (Noto Sans SC subset) and the build harness.
 #
-# Goal: find out empirically how far this codebase is from producing an iOS
-# artifact. Nothing here is signed - codesigning needs an Apple Developer
-# identity, which this workflow deliberately does not have.
+# Nothing here is signed: codesigning needs an Apple Developer identity which this
+# workflow deliberately does not have. The .ipa is meant for a self-signing /
+# sideloading flow on the user's own device.
 #
-# Every probe is continue-on-error so one failure does not stop the rest, and
-# the report is written either way.
+# Two jobs:
+#   build   - macOS runner, cross-compiles aarch64-apple-ios, assembles the .ipa
+#   publish - copies the .ipa onto a release (release asset URLs are fetchable
+#             by anyone for a public repo; artifact downloads need a login)
 
-name: ios-probe
+name: ios-build
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  probe:
+  build:
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     defaults:
       run:
         working-directory: src
 
     steps:
-      # This repository carries patch-ios.py; the upstream source is cloned below.
-      - name: Checkout this repo (patch-ios.py)
+      # This repository carries patch-ios.py + craft-fonts/; upstream is cloned below.
+      - name: Checkout this repo (build inputs)
         uses: actions/checkout@v4
         with:
           path: probe
@@ -39,185 +45,177 @@ jobs:
           git clone --depth 1 https://github.com/storytold/photocraft.git src
           cd src && git log --oneline -1
 
-      - name: Environment
-        run: |
-          {
-            echo "# iOS build probe - storytold/photocraft"
-            echo
-            echo "## Environment"
-            echo "- runner arch : $(uname -m)"
-            echo "- macOS       : $(sw_vers -productVersion)"
-            echo "- Xcode       : $(xcodebuild -version 2>/dev/null | tr '\n' ' ')"
-            echo "- rustc       : $(rustc --version)"
-            echo "- cargo       : $(cargo --version)"
-            echo
-            echo "## iOS support already present in the source tree"
-            echo '- .rs files mentioning target_os="ios" :'" $(grep -rl 'target_os = \"ios\"' --include='*.rs' . | wc -l | tr -d ' ')"
-            echo "- Info.plist files                     : $(find . -name 'Info.plist' | wc -l | tr -d ' ')"
-            echo "- directories under packaging/         : $(ls packaging | tr '\n' ' ')"
-            echo "- CI files mentioning apple-ios        : $(grep -rl 'apple-ios' .github/ 2>/dev/null | wc -l | tr -d ' ')"
-          } > probe-out.md
-
-      - name: Add iOS targets
-        run: |
-          rustup target add aarch64-apple-ios
-          rustup target add aarch64-apple-ios-sim
-          rustup target list --installed
+      - name: Add iOS target
+        run: rustup target add aarch64-apple-ios
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src
+          key: ios
 
-      - name: Probe A - pure core crates -> aarch64-apple-ios
-        continue-on-error: true
+      # ---------------------------------------------------------------- patch
+      # Desktop-only dependencies (no iOS impl at all): rfd, arboard, open,
+      # photocraft-tablet. See patch-ios.py for the full rationale.
+      - name: Apply the iOS patch
+        run: python3 ../probe/patch-ios.py
+
+      # ------------------------------------------------------- embedded fonts
+      # craft-fonts is the upstream-blessed channel for build-time embedded CJK
+      # fonts (crates/text/build.rs reads CRAFT_FONTS_DIR/fonts/manifest.txt and
+      # include_bytes!()s each entry). Upstream ships it for Japanese only, so
+      # patch-fonts.py widens the selection to Hans/Hant. The font itself lives
+      # in this repo (probe/craft-fonts): a 473 KB Noto Sans SC subset covering
+      # the UI strings in crates/ui-egui/src/i18n/zh-hans.tsv.
+      - name: Apply the Chinese-font patch
+        run: python3 ../probe/patch-fonts.py
+
+      - name: Show the embedded font
+        working-directory: .
         run: |
+          echo "--- manifest ---"
+          cat probe/craft-fonts/fonts/manifest.txt
+          echo "--- sizes ---"
+          ls -l probe/craft-fonts/fonts/
+          du -sh probe/craft-fonts
+
+      # ----------------------------------------------------------------- build
+      # CRAFT_FONTS_DIR is absolute: build scripts run in the crate folder, so a
+      # relative path would resolve from crates/text. CRAFT_FONTS_REQUIRED makes
+      # a bad path a hard error instead of a silent Latin-only build.
+      - name: Build the app for aarch64-apple-ios
+        env:
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/probe/craft-fonts
+          CRAFT_FONTS_REQUIRED: "1"
+        run: |
+          cargo build --release --target aarch64-apple-ios -p photocraft 2>&1 | tee build.log
+          echo "--- binary ---"
+          ls -l target/aarch64-apple-ios/release/photocraft
+          file target/aarch64-apple-ios/release/photocraft
+
+      # ------------------------------------------------------------ sanity gate
+      # The whole point of this build is the Chinese font. Fail loudly if the
+      # embedded byte range did not survive into the final Mach-O, rather than
+      # shipping another tofu .ipa.
+      - name: Verify the font really is inside the binary
+        env:
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/probe/craft-fonts
+        run: |
+          BIN=target/aarch64-apple-ios/release/photocraft
+          {
+            echo "# iOS build - storytold/photocraft"
+            echo
+            echo "## Environment"
+            echo "- runner arch : $(uname -m)"
+            echo "- macOS       : $(sw_vers -productVersion)"
+            echo "- rustc       : $(rustc --version)"
+            echo
+            echo "## Binary"
+            echo '```'
+            ls -l "$BIN"
+            file "$BIN"
+            echo '```'
+            echo
+            echo "## Embedded font check"
+            echo '```'
+          } > probe-out.md
+
+          FONT="$CRAFT_FONTS_DIR/fonts/NotoSansSC-UI-Subset.ttf"
+          HITS=$(strings -a "$BIN" | grep -c 'Noto Sans SC' || true)
+          echo "font file          : $FONT" >> probe-out.md
+          echo "font bytes         : $(stat -f%z "$FONT")" >> probe-out.md
+          echo "'Noto Sans SC' hits: $HITS" >> probe-out.md
+          # The family name sits in the generated CraftFont {...} initialiser,
+          # which is a string literal in the binary.
+          if [ "$HITS" -lt 1 ]; then
+            echo "RESULT: FAIL - the font did not make it into the binary" >> probe-out.md
+            echo '```' >> probe-out.md
+            cat probe-out.md
+            exit 1
+          fi
+          echo "RESULT: PASS" >> probe-out.md
+          echo '```' >> probe-out.md
+          cat probe-out.md
+
+      # ------------------------------------------------------------- bundle
+      - name: Assemble the unsigned .ipa
+        run: |
+          BIN=target/aarch64-apple-ios/release/photocraft
+          rm -rf Payload PhotoCraft-unsigned.ipa
+          mkdir -p Payload/PhotoCraft.app
+          cp "$BIN" Payload/PhotoCraft.app/PhotoCraft
+          {
+            echo '<?xml version="1.0" encoding="UTF-8"?>'
+            echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+            echo '<plist version="1.0"><dict>'
+            echo '  <key>CFBundleName</key><string>PhotoCraft</string>'
+            echo '  <key>CFBundleDisplayName</key><string>PhotoCraft</string>'
+            echo '  <key>CFBundleExecutable</key><string>PhotoCraft</string>'
+            echo '  <key>CFBundleIdentifier</key><string>app.photocraft.ios</string>'
+            echo '  <key>CFBundleVersion</key><string>0.5.0</string>'
+            echo '  <key>CFBundleShortVersionString</key><string>0.5.0</string>'
+            echo '  <key>CFBundlePackageType</key><string>APPL</string>'
+            echo '  <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>'
+            echo '  <key>MinimumOSVersion</key><string>16.0</string>'
+            echo '  <key>LSRequiresIPhoneOS</key><true/>'
+            echo '  <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>'
+            echo '  <key>UIRequiredDeviceCapabilities</key><array><string>arm64</string></array>'
+            echo '  <key>UILaunchScreen</key><dict/>'
+            echo '  <key>UISupportedInterfaceOrientations</key>'
+            echo '  <array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>'
+            echo '  <key>UISupportedInterfaceOrientations~ipad</key>'
+            echo '  <array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationPortraitUpsideDown</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>'
+            echo '</dict></plist>'
+          } > Payload/PhotoCraft.app/Info.plist
+          zip -qr PhotoCraft-unsigned.ipa Payload
+          echo "--- ipa ---"
+          ls -l PhotoCraft-unsigned.ipa
+          unzip -l PhotoCraft-unsigned.ipa
           {
             echo
-            echo "## Probe A: core crates -> aarch64-apple-ios"
+            echo "## .ipa"
             echo '```'
-          } >> probe-out.md
-          if cargo build --target aarch64-apple-ios \
-              -p photocraft-doc -p photocraft-raster -p photocraft-color \
-              -p photocraft-geom -p photocraft-compose -p photocraft-codecs \
-              -p photocraft-io -p photocraft-format -p photocraft-algo \
-              -p photocraft-engine > a.log 2>&1
-          then echo "RESULT: PASS" >> probe-out.md
-          else echo "RESULT: FAIL" >> probe-out.md
-          fi
-          tail -n 30 a.log >> probe-out.md
-          echo '```' >> probe-out.md
-
-      - name: Probe B - ui-egui -> aarch64-apple-ios
-        continue-on-error: true
-        run: |
-          {
+            ls -l PhotoCraft-unsigned.ipa
+            unzip -l PhotoCraft-unsigned.ipa
+            echo '```'
             echo
-            echo "## Probe B: photocraft-ui-egui -> aarch64-apple-ios"
-            echo '```'
+            echo "UNSIGNED - needs a self-signing / sideloading flow to install."
           } >> probe-out.md
-          if cargo build --target aarch64-apple-ios -p photocraft-ui-egui > b.log 2>&1
-          then echo "RESULT: PASS" >> probe-out.md
-          else echo "RESULT: FAIL" >> probe-out.md
-          fi
-          tail -n 30 b.log >> probe-out.md
-          echo '```' >> probe-out.md
 
-      - name: Probe C - the actual app -> aarch64-apple-ios
-        continue-on-error: true
-        run: |
-          {
-            echo
-            echo "## Probe C: photocraft (the desktop app) -> aarch64-apple-ios"
-            echo '```'
-          } >> probe-out.md
-          if cargo build --target aarch64-apple-ios -p photocraft > c.log 2>&1
-          then echo "RESULT: PASS" >> probe-out.md
-          else echo "RESULT: FAIL" >> probe-out.md
-          fi
-          tail -n 40 c.log >> probe-out.md
-          echo '```' >> probe-out.md
-
-      - name: Probe C2 - same as C but with eframe wayland/x11 features stripped
-        continue-on-error: true
-        run: |
-          sed -i '' 's/"wayland", "x11", //' apps/photocraft/Cargo.toml
-          {
-            echo
-            echo "## Probe C2: same as C, but eframe wayland/x11 features stripped"
-            echo "(wayland-backend uses Linux-only socket APIs and cannot build for iOS)"
-            echo '```'
-          } >> probe-out.md
-          if cargo build --target aarch64-apple-ios -p photocraft > c2.log 2>&1
-          then echo "RESULT: PASS" >> probe-out.md
-          else echo "RESULT: FAIL" >> probe-out.md
-          fi
-          grep -E '^error' c2.log | head -n 25 >> probe-out.md
-          tail -n 25 c2.log >> probe-out.md
-          echo '```' >> probe-out.md
-
-      - name: Probe C3 - also strip arboard's wayland-data-control
-        continue-on-error: true
-        run: |
-          sed -i '' 's/, features = \["wayland-data-control"\]//' apps/photocraft/Cargo.toml
-          grep -n -E 'eframe = |arboard' apps/photocraft/Cargo.toml >> probe-out.md
-          {
-            echo
-            echo "## Probe C3: also strip arboard wayland-data-control"
-            echo '```'
-          } >> probe-out.md
-          if cargo build --target aarch64-apple-ios -p photocraft > c3.log 2>&1
-          then echo "RESULT: PASS" >> probe-out.md
-          else echo "RESULT: FAIL" >> probe-out.md
-          fi
-          grep -E '^error' c3.log | sort -u | head -n 25 >> probe-out.md
-          tail -n 25 c3.log >> probe-out.md
-          echo '```' >> probe-out.md
-
-      - name: Probe C4 - gate the desktop-only services out (rfd/arboard/open/tablet)
-        continue-on-error: true
-        run: |
-          git checkout -- apps/photocraft/Cargo.toml apps/photocraft/src/services.rs
-          python3 ../probe/patch-ios.py
-          {
-            echo
-            echo "## Probe C4: rfd / arboard / open / photocraft-tablet gated off on iOS"
-            echo "(patch-ios.py: no native file dialog, no clipboard, no URL opener, no tablet)"
-            echo '```'
-          } >> probe-out.md
-          if cargo build --target aarch64-apple-ios -p photocraft > c4.log 2>&1
-          then echo "RESULT: PASS" >> probe-out.md
-          else echo "RESULT: FAIL" >> probe-out.md
-          fi
-          grep -E '^error' c4.log | sort -u | head -n 30 >> probe-out.md
-          tail -n 25 c4.log >> probe-out.md
-          echo '```' >> probe-out.md
-
-      - name: Probe D - try to assemble an unsigned .app / .ipa
-        continue-on-error: true
-        run: |
-          BIN=target/aarch64-apple-ios/debug/photocraft
-          {
-            echo
-            echo "## Probe D: bundle an unsigned .ipa"
-            echo '```'
-          } >> probe-out.md
-          if [ -f "$BIN" ]; then
-            file "$BIN" >> probe-out.md
-            mkdir -p Payload/PhotoCraft.app
-            cp "$BIN" Payload/PhotoCraft.app/PhotoCraft
-            {
-              echo '<?xml version="1.0" encoding="UTF-8"?>'
-              echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
-              echo '<plist version="1.0"><dict>'
-              echo '  <key>CFBundleName</key><string>PhotoCraft</string>'
-              echo '  <key>CFBundleExecutable</key><string>PhotoCraft</string>'
-              echo '  <key>CFBundleIdentifier</key><string>app.photocraft.ios</string>'
-              echo '  <key>CFBundleVersion</key><string>0.5.0</string>'
-              echo '  <key>CFBundleShortVersionString</key><string>0.5.0</string>'
-              echo '  <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>'
-              echo '  <key>MinimumOSVersion</key><string>16.0</string>'
-              echo '  <key>LSRequiresIPhoneOS</key><true/>'
-              echo '</dict></plist>'
-            } > Payload/PhotoCraft.app/Info.plist
-            zip -qr PhotoCraft-unsigned.ipa Payload
-            ls -lh PhotoCraft-unsigned.ipa >> probe-out.md
-            echo "RESULT: ipa assembled (UNSIGNED - will NOT install on a stock iPhone)" >> probe-out.md
-          else
-            echo "RESULT: no binary at $BIN - nothing to bundle" >> probe-out.md
-            find target/aarch64-apple-ios -maxdepth 2 2>/dev/null | head -n 30 >> probe-out.md
-          fi
-          echo '```' >> probe-out.md
-
-      - name: Show report
-        run: cat probe-out.md
-
-      - name: Upload report
+      - name: Upload the build outputs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ios-probe-report
+          name: photocraft-ios
           path: |
             src/probe-out.md
             src/PhotoCraft-unsigned.ipa
+            src/build.log
           if-no-files-found: ignore
+
+  # Artifact downloads require a signed-in session; release assets do not, so the
+  # same files are copied onto a release for easy pickup.
+  publish:
+    needs: build
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download the build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: photocraft-ios
+          path: out
+
+      - name: Publish them as a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -lh out
+          TAG="ios-${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "PhotoCraft iOS #${GITHUB_RUN_NUMBER}" \
+            --notes "Unsigned PhotoCraft for iOS (arm64) with an embedded Noto Sans SC subset, so the Chinese UI renders instead of tofu boxes. Self-sign / sideload it - nothing here is signed." \
+            --latest \
+            $(find out -type f -printf '%p ') || \
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber $(find out -type f -printf '%p ')
