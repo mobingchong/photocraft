@@ -43,7 +43,8 @@ def sub(text, old, new, where):
 
 
 # ---------------------------------------------------- crates/text/craft_fonts.rs
-c = CRAFT.read_text()
+c_raw = CRAFT.read_text()
+c = c_raw
 
 c = sub(
     c,
@@ -152,11 +153,12 @@ c = sub(
 )
 
 CRAFT.write_text(c)
-print("patched", CRAFT)
+print("patched" if c != c_raw else "unchanged", CRAFT)
 
 
 # ------------------------------------------------ crates/ui-egui/cjk_fonts.rs
-u = CJK.read_text()
+u_raw = CJK.read_text()
+u = u_raw
 
 u = sub(
     u,
@@ -251,9 +253,15 @@ u = sub(
 )
 
 CJK.write_text(u)
-print("patched", CJK)
+print("patched" if u != u_raw else "unchanged", CJK)
 
 print("edits applied:", edits)
+if edits == 0:
+    # Already applied, or the anchors moved. The CI always checks out upstream
+    # fresh, so zero edits there means the source changed and the patch no-oped -
+    # which must fail loudly rather than ship a Latin-only build.
+    print("WARNING: no anchors matched - the source may have moved, or this tree is already patched.")
+    sys.exit(1)
 if edits < 5:
     print("WARNING: fewer edits than expected - the upstream source may have moved.")
     sys.exit(1)
