@@ -25,6 +25,17 @@ log = { workspace = true }
 # its macOS support, so they add no new entries to Cargo.lock.
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = "=0.6.4"
-objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSObject", "NSString", "NSURL"] }
-objc2-ui-kit = { version = "=0.3.2", default-features = false, features = ["std", "UIApplication", "UIResponder", "UIViewController", "UIDocumentPickerViewController", "UIImage", "UIPasteboard", "objc2-uniform-type-identifiers"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSObject", "NSString", "NSURL", "NSPathUtilities"] }
+objc2-ui-kit = { version = "=0.3.2", default-features = false, features = [
+    "std",
+    # `keyWindow` is gated on UIWindow, and `presentedViewController` on UIViewController.
+    "UIWindow",
+    "UIApplication",
+    "UIResponder",
+    "UIViewController",
+    "UIDocumentPickerViewController",
+    "UIImage",
+    "UIPasteboard",
+    "objc2-uniform-type-identifiers",
+] }
 objc2-uniform-type-identifiers = { version = "=0.3.2", default-features = false, features = ["std"] }
