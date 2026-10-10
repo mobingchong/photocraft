@@ -1,0 +1,30 @@
+[package]
+name = "photocraft-ios-services"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "UIKit platform services for the iOS port: the document picker, the pasteboard and the URL opener"
+
+# The second isolated `unsafe` helper crate (after photocraft-tablet): Objective-C interop needs
+# it and the workspace forbids `unsafe_code` everywhere else. Only `src/uikit.rs` allows
+# `unsafe`; this crate is built for iOS alone, so on every other target it compiles to nothing
+# and the app crate keeps the workspace's `unsafe_code = "forbid"` untouched.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+
+[dependencies]
+photocraft-ui-egui = { workspace = true }
+photocraft-codecs = { workspace = true }
+log = { workspace = true }
+
+# The UIKit crates: only needed on iOS, and pinned to the objc2 version upstream already uses for
+# its macOS support, so they add no new entries to Cargo.lock.
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "=0.6.4"
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSObject", "NSString", "NSURL"] }
+objc2-ui-kit = { version = "=0.3.2", default-features = false, features = ["std", "UIApplication", "UIResponder", "UIViewController", "UIDocumentPickerViewController", "UIImage", "UIPasteboard", "objc2-uniform-type-identifiers"] }
+objc2-uniform-type-identifiers = { version = "=0.3.2", default-features = false, features = ["std"] }
