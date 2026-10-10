@@ -57,8 +57,41 @@ jobs:
       # ---------------------------------------------------------------- patch
       # Desktop-only dependencies (no iOS impl at all): rfd, arboard, open,
       # photocraft-tablet. See patch-ios.py for the full rationale.
+      #
+      # The iOS platform services themselves live in their own crate
+      # (crates/ios-services), copied in from this repository the same way
+      # craft-fonts is. It is the second isolated `unsafe` crate, because the
+      # workspace's `unsafe_code = "forbid"` cannot be overridden by an inner
+      # `allow` and Objective-C interop needs one that sets its own lint level.
+      - name: Add the iOS services crate
+        working-directory: .
+        run: |
+          rm -rf src/crates/ios-services
+          cp -r probe/ios-services src/crates/ios-services
+          echo "--- the crate ---"
+          find src/crates/ios-services -type f | sort
+          echo "--- lint level ---"
+          grep -A2 '\[lints.rust\]' src/crates/ios-services/Cargo.toml
+
       - name: Apply the iOS patch
         run: python3 ../probe/patch-ios.py
+
+      # The patch has to have wired the iOS services in; a tree that still has
+      # the desktop `native()` as the only implementation would build an app
+      # with no file dialog, no clipboard and no URL opener.
+      - name: Verify the patch took
+        run: |
+          echo "--- native() gate ---"
+          grep -n -B1 'pub fn native' apps/photocraft/src/services.rs
+          echo "--- iOS service calls ---"
+          grep -c 'photocraft_ios_services::' apps/photocraft/src/services.rs
+          for needle in "photocraft_ios_services::show_file_dialog" \
+                        "photocraft_ios_services::open_url" \
+                        "photocraft_ios_services::clipboard_set_image" \
+                        "photocraft_ios_services::clipboard_get_image"; do
+            grep -q "$needle" apps/photocraft/src/services.rs || { echo "MISSING: $needle"; exit 1; }
+          done
+          echo "both native() implementations and all four iOS services are wired"
 
       # ------------------------------------------------------- embedded fonts
       # craft-fonts is the upstream-blessed channel for build-time embedded CJK
@@ -135,6 +168,37 @@ jobs:
           fi
           echo "RESULT: PASS" >> probe-out.md
           echo '```' >> probe-out.md
+
+      # ------------------------------------------------- feature sanity gate
+      # The services are linked from a separate crate, so a mistake in the
+      # wiring can silently produce a binary without them (the fields fall back
+      # to None and the UI just shows the feature as unavailable). Look for the
+      # UIKit class names the doc picker, the pasteboard and the URL opener
+      # reference; objc2 embeds each as a string literal for the class lookup.
+      - name: Verify the UIKit services are in the binary
+        run: |
+          BIN=target/aarch64-apple-ios/release/photocraft
+          {
+            echo
+            echo "## UIKit services"
+            echo '```'
+          } >> probe-out.md
+          FAILED=0
+          for CLASS in UIDocumentPickerViewController \
+                       UIPasteboard \
+                       UIApplication \
+                       UIImage \
+                       UTType; do
+            N=$(strings -a "$BIN" | grep -c "$CLASS" || true)
+            printf '%-34s %s\n' "$CLASS" "$N reference(s)" >> probe-out.md
+            if [ "$N" -lt 1 ]; then
+              echo "RESULT: FAIL - $CLASS is not referenced; the iOS services did not link in" >> probe-out.md
+              FAILED=1
+            fi
+          done
+          echo '```' >> probe-out.md
+          cat probe-out.md
+          if [ "$FAILED" -ne 0 ]; then exit 1; fi
           cat probe-out.md
 
       # ------------------------------------------------------------- bundle
