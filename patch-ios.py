@@ -8,8 +8,8 @@ This is the single patch the CI applies after cloning upstream. It has three job
    `eframe`'s `wayland`/`x11` features pull Linux socket code that does not build for iOS.
    `photocraft-tablet` (macOS/X11 pen input) is likewise not iOS's. Both are dropped from the
    iOS dependency set. Note what is *not* dropped: the app crate keeps `rfd`, `arboard` and
-   `open` out of the iOS build too, but only because `ios_services.rs` supplies UIKit
-   equivalents for all three (job 2) - the features they power stay.
+   `open` out of the iOS build too, but only because the `photocraft-ios-services` crate
+   supplies UIKit equivalents for all three (job 2) - the features they power stay.
 
 2. Platform services
    -------------------
@@ -200,7 +200,8 @@ marker = "\n/// Flat-image import via photocraft-codecs (kept for reference/test
 IOS_NATIVE_MARKER = "/// The iOS services: the same `Services` struct as the desktop build, with the four"
 IOS_NATIVE = '''
 /// The iOS services: the same `Services` struct as the desktop build, with the four
-/// platform-backed fields supplied by [`crate::ios_services`] (UIKit) instead of rfd/arboard/open.
+/// platform-backed fields supplied by the `photocraft-ios-services` crate (UIKit) instead of
+/// rfd/arboard/open.
 ///
 /// Everything else - import, export, prefs, recovery autosave, automation - is identical, so
 /// every feature the desktop build has is present here too.
