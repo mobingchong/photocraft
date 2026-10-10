@@ -12,9 +12,9 @@ use std::path::PathBuf;
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2::{define_class, msg_send, AllocAnyThread, DefinedClass, MainThreadOnly};
+use objc2::{define_class, msg_send, MainThreadOnly};
 use objc2_foundation::{NSArray, NSData, NSHomeDirectory, NSObject, NSObjectProtocol, NSString, NSURL};
-use objc2_ui_kit::{UIApplication, UIDocumentPickerDelegate, UIDocumentPickerViewController, UIImage, UIPasteboard};
+use objc2_ui_kit::{UIApplication, UIDocumentPickerDelegate, UIDocumentPickerViewController, UIImage, UIPasteboard, UIViewController};
 use photocraft_ui_egui::{FileDialogAnswer, FileDialogReply};
 
 thread_local! {
@@ -36,7 +36,12 @@ pub struct PickerDelegateIvars {}
 define_class!(
     // SAFETY: NSObject has no subclassing requirements, and the protocol is `MainThreadOnly`, so
     // UIKit only ever calls these on the main thread.
+    //
+    // `thread_kind` is not optional here: `UIDocumentPickerDelegate` requires
+    // `ClassType::ThreadKind == dyn MainThreadOnly`, so a class without it does not satisfy the
+    // protocol at all.
     #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
     #[name = "PhotoCraftDocumentPicker"]
     #[ivars = PickerDelegateIvars]
     struct PickerDelegate;
@@ -58,8 +63,9 @@ define_class!(
 );
 
 impl PickerDelegate {
-    fn new() -> Retained<Self> {
-        let this = Self::alloc().set_ivars(PickerDelegateIvars {});
+    /// A `MainThreadOnly` class allocates through a `MainThreadMarker`, not `alloc()`.
+    fn new(mtm: objc2::MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(PickerDelegateIvars {});
         unsafe { msg_send![super(this), init] }
     }
 }
@@ -102,9 +108,13 @@ pub fn present_open(reply: FileDialogReply) {
         return;
     };
 
-    let delegate = PickerDelegate::new();
-    let picker =
-        UIDocumentPickerViewController::initForOpeningContentTypes_asCopy(UIDocumentPickerViewController::alloc(), &content_types(), true);
+    let delegate = PickerDelegate::new(mtm);
+    // The class is `MainThreadOnly`, so it allocates through the marker rather than plain `alloc()`.
+    let picker = UIDocumentPickerViewController::initForOpeningContentTypes_asCopy(
+        UIDocumentPickerViewController::alloc(mtm),
+        &content_types(),
+        true,
+    );
     picker.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
     // One file at a time: the UI's dialog queue serialises requests anyway, and an asynchronous
     // multi-select would have to buffer an unbounded number of security scopes.
@@ -116,7 +126,17 @@ pub fn present_open(reply: FileDialogReply) {
     };
     REPLY.with(|slot| *slot.borrow_mut() = Some(reply));
     DELEGATE.with(|slot| *slot.borrow_mut() = Some(delegate));
-    unsafe { root.presentViewController_animated_completion(&picker, true, None) };
+    // `presentViewController:animated:completion:` is the objc2 binding only under the `block2`
+    // feature, which this crate does not enable; a direct `msg_send!` reaches the same selector
+    // without pulling a block ABI in for a completion handler that would be empty anyway.
+    let _: () = unsafe {
+        msg_send![
+            &*root,
+            presentViewController: &*picker,
+            animated: true,
+            completion: Option::<&ProtocolObject<dyn objc2_foundation::NSObjectProtocol>>::None,
+        ]
+    };
 }
 
 /// The document types the picker offers.
@@ -146,11 +166,14 @@ fn content_types() -> Retained<NSArray<objc2_uniform_type_identifiers::UTType>> 
 }
 
 /// The topmost view controller: the key window's root, following any presented sheets.
-fn top_view_controller(mtm: objc2::MainThreadMarker) -> Option<Retained<objc2_ui_kit::UIViewController>> {
+fn top_view_controller(mtm: objc2::MainThreadMarker) -> Option<Retained<UIViewController>> {
     let app = UIApplication::sharedApplication(mtm);
+    // `keyWindow` is deprecated for multi-scene apps, but this port is a single-scene app: eframe
+    // owns the one window, so the app-wide key window is exactly the one the UI is drawn in.
+    #[allow(deprecated)]
     let window = app.keyWindow()?;
-    let mut controller = unsafe { window.rootViewController() };
-    while let Some(presented) = controller.as_ref().and_then(|c| unsafe { c.presentedViewController() }) {
+    let mut controller = window.rootViewController();
+    while let Some(presented) = controller.as_ref().and_then(|c| c.presentedViewController()) {
         controller = Some(presented);
     }
     controller
@@ -163,12 +186,17 @@ pub fn pasteboard_png() -> Option<Vec<u8>> {
         return None;
     }
     let image = unsafe { board.image() }?;
-    Some(image.PNGData().to_vec())
+    // `PNGData` has no objc2 binding (the property is `nullable NSData *`), so ask for it directly.
+    let data: Option<Retained<NSData>> = unsafe { msg_send![&*image, PNGData] };
+    Some(data?.to_vec())
 }
 
 pub fn pasteboard_set_png(png: &[u8]) -> Result<(), String> {
     let data = NSData::with_bytes(png);
-    let image = UIImage::imageWithData_scale(&data, 1.0).ok_or_else(|| "UIImage rejected the PNG".to_string())?;
+    // Plain `imageWithData:` rather than `imageWithData:scale:`: the latter is gated behind
+    // `objc2-core-foundation` for its `CGFloat` argument, and scale 1.0 is what the default
+    // initialiser already assumes for a bitmap this app produced itself.
+    let image = UIImage::imageWithData(&data).ok_or_else(|| "UIImage rejected the PNG".to_string())?;
     let board = UIPasteboard::generalPasteboard();
     unsafe { board.setImage(Some(&image)) };
     Ok(())
@@ -180,8 +208,8 @@ pub fn open_url(url: &str) -> Result<(), String> {
     let app = UIApplication::sharedApplication(mtm);
     // `openURL:` is deprecated by UIKit in favour of the options/completion form, but it is the
     // only synchronous one, and the completion form would need a block ABI binding for a result
-    // this code has nowhere to report asynchronously.
-    if unsafe { app.openURL(&nsurl) } {
+    // this code has nowhere to report asynchronously. objc2 already exposes it as a safe call.
+    if app.openURL(&nsurl) {
         Ok(())
     } else {
         Err(format!("iOS declined to open {url}"))
