@@ -127,6 +127,53 @@ plist = """<?xml version="1.0" encoding="UTF-8"?>
     <string>UIInterfaceOrientationLandscapeRight</string>
   </array>
 
+  <!-- Saves land in the app's Documents directory (see the ios-services crate: iOS is
+       sandboxed, so a save has no shared path to write to and the picker's export mode would
+       have to write during its own callback). These two keys are what make that directory
+       visible in the Files app, so a saved document can be moved, shared, or opened again. -->
+  <key>UIFileSharingEnabled</key>
+  <true/>
+  <key>LSSupportsOpeningDocumentsInPlace</key>
+  <true/>
+
+  <!-- The document types the app handles, so "Open in PhotoCraft" appears for them and the
+       picker can offer the app as a destination. UTI strings; the ones with no system UTI use
+       their extension as a dynamic type. -->
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>PhotoCraft Document</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Owner</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>com.adobe.photoshop-image</string>
+        <string>public.image</string>
+        <string>public.svg-image</string>
+      </array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Image</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.png</string>
+        <string>public.jpeg</string>
+        <string>public.tiff</string>
+        <string>org.webmproject.webp</string>
+        <string>com.compuserve.gif</string>
+        <string>com.microsoft.bmp</string>
+      </array>
+    </dict>
+  </array>
+
   <!-- App icons. iOS resolves these names against files in the bundle root. -->
   <!-- Deliberately NO CFBundleIconName here: that key points at a compiled asset
        catalog (Assets.car), which this build does not produce. Setting it would
